@@ -1,5 +1,6 @@
 package com.vinayak.project.dagOrchestartor.entities;
 
+import com.vinayak.project.dagOrchestartor.entities.ENUM.TaskStatus;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -22,7 +23,8 @@ public class TaskExecution {
 
     private String taskName;
 
-    private String status;
+    @Enumerated(EnumType.STRING)
+    private TaskStatus status;
 
     private Integer retryCount;
 
