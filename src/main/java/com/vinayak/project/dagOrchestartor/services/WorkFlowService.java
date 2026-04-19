@@ -93,20 +93,7 @@ public class WorkFlowService {
     }
 
     @Transactional
-    public void onTaskCompleted(Long workflowExecutionId, String taskName) {
-        //1. Mark current task as COMPLETED
-        TaskExecution taskExecution = taskExecutionRepo.findByWorkFlowExecutionIdAndTaskName(workflowExecutionId,
-                taskName);
-
-        if(taskExecution == null) {
-            throw new RuntimeException("Task Execution Not Found");
-        }
-
-        if(taskExecution.getStatus()== TaskStatus.COMPLETED) return;
-
-        taskExecution.setStatus(TaskStatus.COMPLETED);
-        taskExecutionRepo.save(taskExecution);
-
+    public void triggerDependentTasks(Long workflowExecutionId, String taskName) {
         //2. Fetch workflow execution details to get workflow definition id
         WorkflowExecution workflowExecution = workFlowExecutionRepo.findById(workflowExecutionId)
                 .orElseThrow(() -> new RuntimeException("Workflow Execution Not Found"));
