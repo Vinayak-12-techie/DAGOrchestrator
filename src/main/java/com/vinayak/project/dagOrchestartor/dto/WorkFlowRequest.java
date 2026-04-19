@@ -6,5 +6,5 @@ import lombok.Data;
 public class WorkFlowRequest {
     private String name;
     private Integer version;
-    private Integer definitionJson;
+    private String definitionJson;
 }
