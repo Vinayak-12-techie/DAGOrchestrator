@@ -12,7 +12,6 @@ import com.vinayak.project.dagOrchestartor.repositories.WorkFlowDefinitionRepo;
 import com.vinayak.project.dagOrchestartor.repositories.WorkFlowExecutionRepo;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
-import org.modelmapper.ModelMapper;
 import org.springframework.stereotype.Service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -28,7 +27,7 @@ public class WorkFlowService {
     private final WorkFlowDefinitionRepo workFlowDefinitionRepo;
     private final WorkFlowExecutionRepo workFlowExecutionRepo;
     private final TaskExecutionRepo taskExecutionRepo;
-    private final ModelMapper modelMapper;
+    private final ObjectMapper objectMapper;
 
     public Long createWorkFlow(WorkFlowRequest workFlowRequest) {
         return Long.valueOf("12");
@@ -36,7 +35,7 @@ public class WorkFlowService {
 
     @Transactional
     public Long executeWorkFlow(Long id) {
-        // Fetch Workflow Definition
+        // Fetch Workflow Definition: This is saved while creating workflow and it contains the JSON definition of workflow which is used to create task executions
         WorkFlowDefinition workFlowDefinition = workFlowDefinitionRepo.findById(id)
                 .orElseThrow(() -> new RuntimeException("Not Found"));
 
@@ -47,13 +46,11 @@ public class WorkFlowService {
                 .startedAt(LocalDateTime.now())
                 .build();
 
-        workFlowExecutionRepo.save(workFlowExecution);
+        workFlowExecution = workFlowExecutionRepo.save(workFlowExecution);
 
         // Parse Workflow Definition JSON
         WorkFlowDefinitionJson workflowDefinitionJson;
-
         try {
-            ObjectMapper objectMapper = new ObjectMapper();
             workflowDefinitionJson = objectMapper.readValue(workFlowDefinition.getDefinitionJson(), WorkFlowDefinitionJson.class);
         } catch (Exception e) {
             throw new RuntimeException("Invalid Workflow JSON", e);
@@ -93,5 +90,81 @@ public class WorkFlowService {
 
         return workFlowExecution.getId();
 
+    }
+
+    @Transactional
+    public void onTaskCompleted(Long workflowExecutionId, String taskName) {
+        //1. Mark current task as COMPLETED
+        TaskExecution taskExecution = taskExecutionRepo.findByWorkFlowExecutionIdAndTaskName(workflowExecutionId,
+                taskName);
+
+        if(taskExecution == null) {
+            throw new RuntimeException("Task Execution Not Found");
+        }
+
+        if(taskExecution.getStatus()== TaskStatus.COMPLETED) return;
+
+        taskExecution.setStatus(TaskStatus.COMPLETED);
+        taskExecutionRepo.save(taskExecution);
+
+        //2. Fetch workflow execution details to get workflow definition id
+        WorkflowExecution workflowExecution = workFlowExecutionRepo.findById(workflowExecutionId)
+                .orElseThrow(() -> new RuntimeException("Workflow Execution Not Found"));
+
+        //3. Load WorkFlow Definition -> Parse JSON
+        WorkFlowDefinition workFlowDefinition = workFlowDefinitionRepo.findById(workflowExecution.getWorkflowDefinitionId())
+                .orElseThrow(() -> new RuntimeException("Workflow Definition Not Found"));
+
+        WorkFlowDefinitionJson workflowDefinitionJson;
+        try {
+            workflowDefinitionJson = objectMapper.readValue(workFlowDefinition.getDefinitionJson(), WorkFlowDefinitionJson.class);
+        } catch (Exception e) {
+            throw new RuntimeException("Invalid Workflow JSON", e);
+        }
+
+        //4. Get All Task Executions for current workflow execution
+        List<TaskExecution> taskExecutions = taskExecutionRepo.findByWorkFlowExecutionId(workflowExecutionId);
+        Map<String, TaskExecution> taskExecutionMap = new HashMap<>();
+        for (TaskExecution execution : taskExecutions) {
+            taskExecutionMap.put(execution.getTaskName(), execution);
+        }
+
+        //5. Find dependent tasks and check if all dependencies are completed, if yes mark them as READY
+        List<TaskExecution> readyTasks = new ArrayList<>();
+        for (TaskDefinition taskDefinition : workflowDefinitionJson.getTasks()) {
+            if (taskDefinition.getDependencies() != null && taskDefinition.getDependencies().contains(taskName)) {
+                boolean allDependenciesCompleted = true;
+                for (String dependency : taskDefinition.getDependencies()) {
+                    TaskExecution dependencyExecution = taskExecutionMap.get(dependency);
+                    if (dependencyExecution == null || dependencyExecution.getStatus() != TaskStatus.COMPLETED) {
+                        allDependenciesCompleted = false;
+                        break;
+                    }
+                }
+
+                if (allDependenciesCompleted) {
+                    TaskExecution dependentTaskExecution =
+                            taskExecutionMap.get(taskDefinition.getName());
+
+                    if (dependentTaskExecution != null
+                            && dependentTaskExecution.getStatus() == TaskStatus.CREATED) {
+
+                        dependentTaskExecution.setStatus(TaskStatus.READY);
+                        readyTasks.add(dependentTaskExecution);
+                    }
+                }
+            }
+        }
+
+        taskExecutionRepo.saveAll(readyTasks);
+
+        boolean allTasksCompleted = taskExecutions.stream()
+                .allMatch(execution -> execution.getStatus() == TaskStatus.COMPLETED);
+
+        if (allTasksCompleted) {
+            workflowExecution.setStatus("COMPLETED");
+            workflowExecution.setEndedAt(LocalDateTime.now());
+            workFlowExecutionRepo.save(workflowExecution);
+        }
     }
 }
