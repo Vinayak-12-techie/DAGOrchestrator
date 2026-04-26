@@ -29,7 +29,7 @@ public class WorkerService {
     public void pollAndExecuteTasks() {
         logger.debug("===== Task Polling Cycle Started =====");
 
-        List<TaskExecution> readyTasks = taskExecutionRepo.findByStatus(TaskStatus.READY);
+        List<TaskExecution> readyTasks = taskExecutionRepo.findReadyTasksWithRetry(TaskStatus.READY);
         logger.info("Found {} tasks in READY status for execution", readyTasks.size());
 
         if (readyTasks.isEmpty()) {
@@ -52,7 +52,7 @@ public class WorkerService {
         // Attempt to update task status to RUNNING atomically
         int updatedRows = taskExecutionRepo.updateStatusIfMatches(taskId, TaskStatus.READY, TaskStatus.RUNNING);
 
-        if(updatedRows == 0) {
+        if (updatedRows == 0) {
             logger.warn("Failed to update task {} to RUNNING. It may have been picked by another worker.", taskId);
             return; // Another worker has already picked this task
         }
@@ -67,22 +67,48 @@ public class WorkerService {
             logger.info("Task {} is now RUNNING", task.getTaskName());
 
             Thread.sleep(ThreadLocalRandom.current().nextInt(1000, 3000)); // Simulate time taken to execute task
-
             task.setStatus(TaskStatus.COMPLETED);
+            task.setNextRetryTime(null);
+            taskExecutionRepo.save(task);
+
             logger.info("Task {} completed successfully", task.getTaskName());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            task.setStatus(TaskStatus.FAILED);
-            logger.error("Task {} execution failed: {}", task.getTaskName(), e.getMessage(), e);
+
+            // Trigger dependent tasks
+            logger.debug("Triggering dependent tasks for completed task: {}", task.getTaskName());
+
+            workFlowService.triggerDependentTasks(task.getWorkFlowExecutionId(), task.getTaskName());
+            workFlowService.checkAndUpdateWorkflowStatus(task.getWorkFlowExecutionId());
+
+            logger.debug("Dependent task trigger completed for: {}", task.getTaskName());
+            logger.debug("Task {} persisted to database with status: {}", task.getTaskName(), task.getStatus());
+
+        } catch (Exception e) {
+            handleTaskFailure(task, e);
         }
+    }
 
-        taskExecutionRepo.save(task);
-        logger.debug("Task {} persisted to database with status: {}", task.getTaskName(), task.getStatus());
+    private void handleTaskFailure(TaskExecution task, Exception e) {
+        int currentRetry = task.getRetryCount();
+        int maxRetries = task.getMaxRetries() != null ? task.getMaxRetries() : 3; // Default to 3 retries if not set
 
-        // Trigger dependent tasks
-        logger.debug("Triggering dependent tasks for completed task: {}", task.getTaskName());
-        workFlowService.triggerDependentTasks(task.getWorkFlowExecutionId(), task.getTaskName());
-        logger.debug("Dependent task trigger completed for: {}", task.getTaskName());
+        logger.error("Task {} failed on attempt {}/{}. Error: {}", task.getTaskName(), currentRetry + 1, maxRetries, e.getMessage());
+
+        if (currentRetry < maxRetries) {
+            int retryCount = currentRetry + 1;
+            long backoffTime = Math.min(60, (long) Math.pow(2, retryCount)); // Exponential backoff
+
+            task.setRetryCount(retryCount);
+            task.setStatus(TaskStatus.READY); // Set back to READY for retry
+            task.setNextRetryTime(java.time.LocalDateTime.now().plusSeconds(backoffTime));
+            taskExecutionRepo.save(task);
+            logger.info("Task {} will be retried at {} (Retry count: {})", task.getTaskName(), task.getNextRetryTime(), retryCount);
+
+        } else {
+            task.setStatus(TaskStatus.FAILED);
+            logger.error("Task {} has reached max retry attempts and is marked as FAILED", task.getTaskName());
+            taskExecutionRepo.save(task);
+            workFlowService.checkAndUpdateWorkflowStatus(task.getWorkFlowExecutionId());
+        }
     }
 
     @PreDestroy
