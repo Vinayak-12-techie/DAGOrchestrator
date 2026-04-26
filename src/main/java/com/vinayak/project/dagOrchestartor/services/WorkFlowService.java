@@ -222,4 +222,25 @@ public class WorkFlowService {
                        workflowExecutionId, completedCount, taskExecutions.size());
         }
     }
+
+    public void checkAndUpdateWorkflowStatus(Long workFlowExecutionId) {
+        List<TaskExecution> tasks = taskExecutionRepo.findByWorkFlowExecutionId(workFlowExecutionId);
+        boolean allCompleted = tasks.stream().allMatch(t -> t.getStatus() == TaskStatus.COMPLETED);
+        boolean anyFailed = tasks.stream().anyMatch(t -> t.getStatus() == TaskStatus.FAILED);
+
+        WorkflowExecution workflowExecution = workFlowExecutionRepo.findById(workFlowExecutionId).orElseThrow(() ->
+                new RuntimeException("Workflow Execution with ID " + workFlowExecutionId + " not found"));
+
+        if (allCompleted) {
+            workflowExecution.setStatus("COMPLETED");
+            workflowExecution.setEndedAt(java.time.LocalDateTime.now());
+            logger.info("Workflow Execution {} marked as COMPLETED", workFlowExecutionId);
+        } else if (anyFailed) {
+            workflowExecution.setStatus("FAILED");
+            workflowExecution.setEndedAt(java.time.LocalDateTime.now());
+            logger.info("Workflow Execution {} marked as FAILED due to task failures", workFlowExecutionId);
+        }
+
+        workFlowExecutionRepo.save(workflowExecution);
+    }
 }

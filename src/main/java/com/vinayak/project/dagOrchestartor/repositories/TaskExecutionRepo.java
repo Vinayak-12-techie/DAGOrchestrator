@@ -21,4 +21,7 @@ public interface TaskExecutionRepo extends JpaRepository<TaskExecution,Long> {
     int updateStatusIfMatches(@Param("id") Long id,
                               @Param("currentStaus") TaskStatus currentStatus,
                               @Param("newStatus") TaskStatus newStatus);
+
+    @Query("SELECT t FROM TaskExecution t WHERE t.status = :status AND (t.nextRetryTime IS NULL OR t.nextRetryTime <= CURRENT_TIMESTAMP)")
+    List<TaskExecution> findReadyTasksWithRetry(@Param("status") TaskStatus status);
 }
