@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
     <property name="LOG_FILE" value="logs/dag-orchestrator.log"/>
+    <property name="LOG_PATTERN" value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"/>
 
     <!-- Console Appender -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n</pattern>
+            <pattern>${LOG_PATTERN}</pattern>
         </encoder>
     </appender>
 
@@ -13,7 +14,7 @@
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>${LOG_FILE}</file>
         <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n</pattern>
+            <pattern>${LOG_PATTERN}</pattern>
         </encoder>
         <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
             <fileNamePattern>logs/dag-orchestrator-%d{yyyy-MM-dd}.%i.log</fileNamePattern>
@@ -23,17 +24,27 @@
         </rollingPolicy>
     </appender>
 
+    <!-- Async Appender for better performance -->
+    <appender name="ASYNC_FILE" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>512</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <appender-ref ref="FILE"/>
+    </appender>
+
     <!-- Logger configurations -->
     <!-- Your application -->
-    <logger name="com.vinayak.project.dagOrchestartor" level="INFO"/>
+    <logger name="com.vinayak.project.dagOrchestartor" level="DEBUG"/>
+    <logger name="com.vinayak.project.dagOrchestartor.controllers" level="INFO"/>
+    <logger name="com.vinayak.project.dagOrchestartor.services" level="INFO"/>
 
     <!-- Spring Framework -->
     <logger name="org.springframework" level="WARN"/>
     <logger name="org.springframework.web" level="INFO"/>
+    <logger name="org.springframework.boot.web" level="WARN"/>
 
     <!-- Hibernate - Keep minimal -->
     <logger name="org.hibernate" level="WARN"/>
-    <logger name="org.hibernate.SQL" level="INFO"/>
+    <logger name="org.hibernate.SQL" level="WARN"/>
     <logger name="org.hibernate.type.descriptor.sql.BasicBinder" level="WARN"/>
 
     <!-- JPA -->
@@ -42,10 +53,14 @@
     <!-- PostgreSQL Driver -->
     <logger name="org.postgresql" level="WARN"/>
 
+    <!-- Kafka -->
+    <logger name="org.apache.kafka" level="WARN"/>
+    <logger name="org.springframework.kafka" level="INFO"/>
+
     <!-- Root Logger -->
-    <root level="WARN">
+    <root level="INFO">
         <appender-ref ref="CONSOLE"/>
-        <appender-ref ref="FILE"/>
+        <appender-ref ref="ASYNC_FILE"/>
     </root>
 
 </configuration>

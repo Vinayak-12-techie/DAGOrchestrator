@@ -7,6 +7,7 @@ import com.vinayak.project.dagOrchestartor.entities.ENUM.TaskStatus;
 import com.vinayak.project.dagOrchestartor.entities.TaskExecution;
 import com.vinayak.project.dagOrchestartor.entities.WorkFlowDefinition;
 import com.vinayak.project.dagOrchestartor.entities.WorkflowExecution;
+import com.vinayak.project.dagOrchestartor.kafka.TaskProducer;
 import com.vinayak.project.dagOrchestartor.repositories.TaskExecutionRepo;
 import com.vinayak.project.dagOrchestartor.repositories.WorkFlowDefinitionRepo;
 import com.vinayak.project.dagOrchestartor.repositories.WorkFlowExecutionRepo;
@@ -32,6 +33,7 @@ public class WorkFlowService {
     private final WorkFlowExecutionRepo workFlowExecutionRepo;
     private final TaskExecutionRepo taskExecutionRepo;
     private final ObjectMapper objectMapper;
+    private final TaskProducer taskProducer;
 
     public Long createWorkFlow(WorkFlowRequest workFlowRequest) {
         logger.info("Creating workflow: name={}", workFlowRequest.getName());
@@ -115,6 +117,11 @@ public class WorkFlowService {
             }
         }
         taskExecutionRepo.saveAll(readyTasks);
+        for(TaskExecution readyTask : readyTasks) {
+            taskProducer.sendTask(readyTask.getId(), workFlowExecution.getId().toString());
+            logger.info("Task {} sent to Kafka for execution", readyTask.getTaskName());
+        }
+
         logger.info("Updated {} tasks to READY status", readyTasks.size());
 
         logger.info("Workflow execution completed successfully. Execution ID: {}, Status: RUNNING with {} ready tasks", 
@@ -190,7 +197,9 @@ public class WorkFlowService {
                             && dependentTaskExecution.getStatus() == TaskStatus.CREATED) {
 
                         dependentTaskExecution.setStatus(TaskStatus.READY);
-                        readyTasks.add(dependentTaskExecution);
+                        taskExecutionRepo.save(dependentTaskExecution);
+//                        readyTasks.add(dependentTaskExecution);
+                        taskProducer.sendTask(dependentTaskExecution.getId(), workflowExecutionId.toString());
                         logger.info("Task {} marked as READY - all dependencies completed", taskDefinition.getName());
                     }
                 } else {
@@ -199,46 +208,45 @@ public class WorkFlowService {
             }
         }
 
-        if (!readyTasks.isEmpty()) {
-            taskExecutionRepo.saveAll(readyTasks);
-            logger.info("Updated {} tasks to READY status", readyTasks.size());
-        } else {
-            logger.debug("No new tasks ready to be triggered");
-        }
-
-        boolean allTasksCompleted = taskExecutions.stream()
-                .allMatch(execution -> execution.getStatus() == TaskStatus.COMPLETED);
-
-        if (allTasksCompleted) {
-            workflowExecution.setStatus("COMPLETED");
-            workflowExecution.setEndedAt(LocalDateTime.now());
-            workFlowExecutionRepo.save(workflowExecution);
-            logger.info("All tasks completed. Workflow execution {} marked as COMPLETED", workflowExecutionId);
-        } else {
-            long completedCount = taskExecutions.stream()
-                    .filter(execution -> execution.getStatus() == TaskStatus.COMPLETED)
-                    .count();
-            logger.debug("Workflow execution {} progress: {}/{} tasks completed", 
-                       workflowExecutionId, completedCount, taskExecutions.size());
-        }
+        logger.debug("Completed dependency check for workflow execution ID: {}", workflowExecutionId);
     }
 
     public void checkAndUpdateWorkflowStatus(Long workFlowExecutionId) {
+        logger.info("Checking workflow status for execution ID: {}", workFlowExecutionId);
+        
         List<TaskExecution> tasks = taskExecutionRepo.findByWorkFlowExecutionId(workFlowExecutionId);
+        
+        long completedCount = tasks.stream().filter(t -> t.getStatus() == TaskStatus.COMPLETED).count();
+        long failedCount = tasks.stream().filter(t -> t.getStatus() == TaskStatus.FAILED).count();
+        long runningCount = tasks.stream().filter(t -> t.getStatus() == TaskStatus.RUNNING).count();
+        long readyCount = tasks.stream().filter(t -> t.getStatus() == TaskStatus.READY).count();
+        long createdCount = tasks.stream().filter(t -> t.getStatus() == TaskStatus.CREATED).count();
+        
+        logger.debug("Workflow {} task status summary: Total={}, Completed={}, Failed={}, Running={}, Ready={}, Created={}", 
+                   workFlowExecutionId, tasks.size(), completedCount, failedCount, runningCount, readyCount, createdCount);
+        
         boolean allCompleted = tasks.stream().allMatch(t -> t.getStatus() == TaskStatus.COMPLETED);
         boolean anyFailed = tasks.stream().anyMatch(t -> t.getStatus() == TaskStatus.FAILED);
 
-        WorkflowExecution workflowExecution = workFlowExecutionRepo.findById(workFlowExecutionId).orElseThrow(() ->
-                new RuntimeException("Workflow Execution with ID " + workFlowExecutionId + " not found"));
+        WorkflowExecution workflowExecution = workFlowExecutionRepo.findById(workFlowExecutionId).orElseThrow(() -> {
+            logger.error("Workflow Execution with ID {} not found", workFlowExecutionId);
+            return new RuntimeException("Workflow Execution with ID " + workFlowExecutionId + " not found");
+        });
 
+        String previousStatus = workflowExecution.getStatus();
         if (allCompleted) {
             workflowExecution.setStatus("COMPLETED");
             workflowExecution.setEndedAt(java.time.LocalDateTime.now());
-            logger.info("Workflow Execution {} marked as COMPLETED", workFlowExecutionId);
+            logger.info("Workflow Execution {} status changed from {} to COMPLETED at {}", 
+                       workFlowExecutionId, previousStatus, workflowExecution.getEndedAt());
         } else if (anyFailed) {
             workflowExecution.setStatus("FAILED");
             workflowExecution.setEndedAt(java.time.LocalDateTime.now());
-            logger.info("Workflow Execution {} marked as FAILED due to task failures", workFlowExecutionId);
+            logger.info("Workflow Execution {} status changed from {} to FAILED due to {} failed task(s) at {}", 
+                       workFlowExecutionId, previousStatus, failedCount, workflowExecution.getEndedAt());
+        } else {
+            logger.debug("Workflow Execution {} still in progress. Completed: {}/{}, Failed: {}", 
+                        workFlowExecutionId, completedCount, tasks.size(), failedCount);
         }
 
         workFlowExecutionRepo.save(workflowExecution);
